@@ -3,7 +3,8 @@
 require 'erb'
 require 'cgi'
 require 'ostruct'
-require 'pathname'
+require 'openssl'
+require 'base64'
 
 # TEMPLATES
 PAGE_TEMPLATE = <<-ERB
@@ -14,11 +15,29 @@ PAGE_TEMPLATE = <<-ERB
     <title>Pictor</title>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
     <style type="text/css">
-      .img-frame {
-        width: 800px
+      #pictures div {
+        width: 800px;
+        margin: 10px;
       }
       img {
-        width: 100%
+        padding: 10px;
+        height: auto;
+        max-width: 780px;
+        border: 1px solid gray;
+      }
+      #explorer {
+        position: fixed;
+        left: 900px;
+        border: 1px solid gray;
+      }
+      #explorer a {
+        padding: 5px;
+        display: block;
+        text-decoration: none;
+        color: gray;
+      }
+      #explorer a:hover {
+        color: red;
       }
     </style>
   </head>
@@ -37,7 +56,7 @@ ERB
 
 EXPLORER_TEMPLATE = <<-ERB
 <% directories.each do |dir| %>
-  <a href="<%= url_base + dir %>"><%= dir %></a>
+  <a href="<%= url_base + dir.encoded_path %>"><%= dir.name %></a>
 <% end %>
 ERB
 
@@ -54,21 +73,49 @@ ERB
 
 # CONFIG
 PICTURE_EXTENSIONS = /\.(png|gif|jpg)$/
+ENCRYPTION_TOKEN = "super secret token" # at least 256 bits
 
 
+# Lib
+
+def decode_path(raw)
+  data, iv = raw.split(',').map { |param| Base64::decode64(param) }
+  cipher = OpenSSL::Cipher::AES256.new(:CBC)
+  cipher.decrypt
+  cipher.iv = iv
+  cipher.key = ENCRYPTION_TOKEN
+  cipher.update(data) + cipher.final
+end
+
+def encode_path(path)
+  cipher = OpenSSL::Cipher::AES256.new(:CBC)
+  cipher.encrypt
+  iv = cipher.random_iv
+  cipher.key = ENCRYPTION_TOKEN
+  data = cipher.update(path) + cipher.final
+  [data, iv].map { |param| Base64::strict_encode64(param) }.join(',')
+end
+
+Directory = Struct.new(:name, :encoded_path)
 
 # MAIN
 
 cgi = CGI.new
-path = cgi.params['path'].first || '.'
+param = cgi.params['path'].first
+if param
+  path = decode_path(param)
+else
+  path = '.'
+end
+
 file_entries = Dir.glob("#{path}/*")
 
 # build explorer
-directories = file_entries.select { |entry| File.directory? entry }.map { |dir| dir.split('/').last }
+directories = file_entries.select { |entry| File.directory? entry }.map { |dir| dir.split('/').last }.map { |dir| Directory.new(dir, encode_path(dir)) }
 
 script_name = $0.split('/').last
-url_base = "#{script_name}?path=#{path}/"
-context = OpenStruct.new(directories: directories, url_base:url_base).instance_eval { binding }
+url_base = "#{script_name}?path="
+context = OpenStruct.new(directories: directories, url_base: url_base).instance_eval { binding }
 explorer_source = ERB.new(EXPLORER_TEMPLATE).result(context)
 
 
