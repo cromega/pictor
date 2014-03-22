@@ -56,7 +56,7 @@ ERB
 
 EXPLORER_TEMPLATE = <<-ERB
 <% directories.each do |dir| %>
-  <a href="<%= url_base + dir.encoded_path %>"><%= dir.name %></a>
+  <a href="<%= url_base + dir.encoded_path %>">&gt; <%= dir.name %></a>
 <% end %>
 ERB
 
@@ -93,7 +93,7 @@ def encode_path(path)
   iv = cipher.random_iv
   cipher.key = ENCRYPTION_TOKEN
   data = cipher.update(path) + cipher.final
-  [data, iv].map { |param| Base64::strict_encode64(param) }.join(',')
+  [data, iv].map { |param| Base64::strict_encode64(param) }.map { |param| CGI::escape(param) }.join(',')
 end
 
 Directory = Struct.new(:name, :encoded_path)
