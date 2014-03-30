@@ -77,55 +77,73 @@ ENCRYPTION_TOKEN = "super secret token" # at least 256 bits
 
 
 # Lib
-
-def decode_path(raw)
-  data, iv = raw.split(',').map { |param| Base64::decode64(param) }
-  cipher = OpenSSL::Cipher::AES256.new(:CBC)
-  cipher.decrypt
-  cipher.iv = iv
-  cipher.key = ENCRYPTION_TOKEN
-  cipher.update(data) + cipher.final
+class Context
+  def self.create(data)
+    OpenStruct.new(data).instance_eval { binding }
+  end
 end
 
-def encode_path(path)
-  cipher = OpenSSL::Cipher::AES256.new(:CBC)
-  cipher.encrypt
-  iv = cipher.random_iv
-  cipher.key = ENCRYPTION_TOKEN
-  data = cipher.update(path) + cipher.final
-  [data, iv].map { |param| Base64::strict_encode64(param) }.map { |param| CGI::escape(param) }.join(',')
+class Cipher
+  def self.encrypt(data)
+    cipher = OpenSSL::Cipher::AES256.new(:CBC)
+    cipher.encrypt
+    iv = cipher.random_iv
+    cipher.key = ENCRYPTION_TOKEN
+    encoded = cipher.update(data) + cipher.final
+    [encoded, iv]
+  end
+
+  def self.decrypt(data, iv)
+    cipher = OpenSSL::Cipher::AES256.new(:CBC)
+    cipher.decrypt
+    cipher.iv = iv
+    cipher.key = ENCRYPTION_TOKEN
+    cipher.update(data) + cipher.final
+  end
 end
 
-Directory = Struct.new(:name, :encoded_path)
+class Directory
+  attr_reader :name
+
+  def initialize(name)
+    @name = name
+  end
+
+  def encoded_path
+    encoded, iv = Cipher.encrypt(@name)
+    [encoded, iv].map { |param| Base64::strict_encode64(param) }.map { |param| CGI::escape(param) }.join(',')
+  end
+
+  def self.decode_path(raw)
+    data, iv = raw.split(',').map { |param| Base64::decode64(param) }
+    name = Cipher.decrypt(data, iv)
+    new(name)
+  end
+end
 
 # MAIN
-
 cgi = CGI.new
 param = cgi.params['path'].first
-if param
-  path = decode_path(param)
-else
-  path = '.'
-end
+path = param ? Directory.decode_path(param).name : '.'
 
 file_entries = Dir.glob("#{path}/*")
 
 # build explorer
-directories = file_entries.select { |entry| File.directory? entry }.map { |dir| dir.split('/').last }.map { |dir| Directory.new(dir, encode_path(dir)) }
+directories = file_entries.select { |entry| File.directory? entry }.map { |dir| dir.split('/').last }.map { |dir| Directory.new(dir) }
 
 script_name = $0.split('/').last
 url_base = "#{script_name}?path="
-context = OpenStruct.new(directories: directories, url_base: url_base).instance_eval { binding }
+context = Context.create(directories: directories, url_base: url_base)
 explorer_source = ERB.new(EXPLORER_TEMPLATE).result(context)
 
 
 #build picture list
 images = file_entries.select { |entry| entry =~ PICTURE_EXTENSIONS }
 
-context = OpenStruct.new(images: images).instance_eval { binding }
+context = Context.create(images: images)
 images_source = ERB.new(IMAGES_TEMPLATE).result(context)
 
-context = OpenStruct.new(explorer: explorer_source, content: images_source).instance_eval { binding }
+context = Context.create(explorer: explorer_source, content: images_source)
 output = ERB.new(PAGE_TEMPLATE).result(context)
 
 cgi.out { output }
