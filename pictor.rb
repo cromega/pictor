@@ -5,6 +5,7 @@ require 'cgi'
 require 'ostruct'
 require 'openssl'
 require 'base64'
+require 'shellwords'
 
 # TEMPLATES
 PAGE_TEMPLATE = <<-ERB
@@ -16,18 +17,18 @@ PAGE_TEMPLATE = <<-ERB
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
     <style type="text/css">
       #pictures div {
-        width: 800px;
+        width: 400px;
         margin: 10px;
       }
       img {
         padding: 10px;
         height: auto;
-        max-width: 780px;
+        max-width: 380px;
         border: 1px solid gray;
       }
       #explorer {
         position: fixed;
-        left: 900px;
+        left: 500px;
         border: 1px solid gray;
       }
       #explorer a {
@@ -63,18 +64,12 @@ ERB
 IMAGES_TEMPLATE = <<-ERB
 <% images.each do |image| %>
   <div class="img-frame">
-    <a href="<%= image %>" target="_blank">
-      <img src="<%= image %>" alt="<%= image %>" />
+    <a href="<%= image.path %>" target="_blank">
+      <img src="<%= image.path %>" alt="<%= image.path %>" />
     </a>
   </div>
 <% end %>
 ERB
-
-
-# CONFIG
-PICTURE_EXTENSIONS = /\.(png|gif|jpg)$/
-ENCRYPTION_TOKEN = "super secret token" # at least 256 bits
-
 
 # Lib
 class Context
@@ -88,7 +83,7 @@ class Cipher
     cipher = OpenSSL::Cipher::AES256.new(:CBC)
     cipher.encrypt
     iv = cipher.random_iv
-    cipher.key = ENCRYPTION_TOKEN
+    cipher.key = Configuration.encryption_token
     encoded = cipher.update(data) + cipher.final
     [encoded, iv]
   end
@@ -97,7 +92,7 @@ class Cipher
     cipher = OpenSSL::Cipher::AES256.new(:CBC)
     cipher.decrypt
     cipher.iv = iv
-    cipher.key = ENCRYPTION_TOKEN
+    cipher.key = Configuration.encryption_token
     cipher.update(data) + cipher.final
   end
 end
@@ -121,6 +116,88 @@ class Directory
   end
 end
 
+class ImageMagick
+  def initialize(src, out)
+    @src = src
+    @out = out
+    @operations = []
+  end
+
+  def <<(operation)
+    @operations << operation
+  end
+
+  def run
+    system(cmdline)
+    $? == 0
+  end
+
+  def self.found?
+    `which convert`
+    $? == 0
+  end
+
+  private
+
+  def cmdline
+    operations = @operations.join(' ')
+    "convert #{operations} #{Shellwords.escape(@src)} #{Shellwords.escape(@out)}"
+  end
+end
+
+class Image
+  attr_reader :path
+
+  def initialize(path)
+    @path = path
+  end
+
+  def process
+    return self unless should_resize?(@path)
+    Thumbnail.create(@path)
+  end
+
+  private
+
+  def should_resize?(path)
+    Configuration.create_thumbnails
+  end
+end
+
+class Thumbnail
+  attr_reader :path
+
+  def initialize(path)
+    @path = path
+  end
+
+  def self.create(path)
+    dir = "#{File.dirname(path)}/.pictor"
+    filename = File.basename(path)
+    Dir.mkdir(dir) unless File.directory?(dir)
+    thumbnail_path = "#{dir}/#{filename}"
+
+    # the thumbnail exists and is up to date, no need for conversion
+    if File.exists?(thumbnail_path) && File.ctime(path) <= File.ctime(thumbnail_path)
+      return new(thumbnail_path)
+    end
+
+    convert = ImageMagick.new(path, thumbnail_path)
+    convert << '-scale 380'
+    success = convert.run
+
+    raise "converting picture failed" unless success
+    new(thumbnail_path)
+  end
+end
+
+# CONFIG
+Configuration = OpenStruct.new(
+  picture_extensions: /\.(png|gif|jpg)$/,
+  create_thumbnails: ImageMagick.found? && true,
+  encryption_token: "super secret token" # at least 256 bits
+)
+
 # MAIN
 cgi = CGI.new
 param = cgi.params['path'].first
@@ -138,7 +215,7 @@ explorer_source = ERB.new(EXPLORER_TEMPLATE).result(context)
 
 
 #build picture list
-images = file_entries.select { |entry| entry =~ PICTURE_EXTENSIONS }
+images = file_entries.select { |entry| entry =~ Configuration.picture_extensions }.map { |file| Image.new(file).process }
 
 context = Context.create(images: images)
 images_source = ERB.new(IMAGES_TEMPLATE).result(context)
