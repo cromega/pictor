@@ -65,7 +65,7 @@ IMAGES_TEMPLATE = <<-ERB
 <% images.each do |image| %>
   <div class="img-frame">
     <a href="<%= image.path %>" target="_blank">
-      <img src="<%= image.path %>" alt="<%= image.path %>" />
+      <img src="<%= image.optimal_path %>" alt="<%= image.optimal_path %>" />
     </a>
   </div>
 <% end %>
@@ -152,9 +152,13 @@ class Image
     @path = path
   end
 
-  def process
-    return self unless should_resize?(@path)
-    Thumbnail.create(@path)
+  def thumbnail
+    return unless ImageMagick.found? && Configuration.create_thumbnails
+    @thumbnail ||= Thumbnail.create(@path)
+  end
+
+  def optimal_path
+    @thumbnail ? @thumbnail.path : @path
   end
 
   private
@@ -194,8 +198,8 @@ end
 # CONFIG
 Configuration = OpenStruct.new(
   picture_extensions: /\.(png|gif|jpg)$/,
-  create_thumbnails: ImageMagick.found? && true,
   encryption_token: "super secret token" # at least 256 bits
+  create_thumbnails: true,
 )
 
 # MAIN
@@ -215,7 +219,7 @@ explorer_source = ERB.new(EXPLORER_TEMPLATE).result(context)
 
 
 #build picture list
-images = file_entries.select { |entry| entry =~ Configuration.picture_extensions }.map { |file| Image.new(file).process }
+images = file_entries.select { |entry| entry =~ Configuration.picture_extensions }.map { |file| Image.new(file) }
 
 context = Context.create(images: images)
 images_source = ERB.new(IMAGES_TEMPLATE).result(context)
