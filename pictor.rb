@@ -153,18 +153,12 @@ class Image
   end
 
   def thumbnail
-    return unless ImageMagick.found? && Configuration.create_thumbnails
+    return unless Configuration.create_thumbnails && ImageMagick.found?
     @thumbnail ||= Thumbnail.create(@path)
   end
 
   def optimal_path
     @thumbnail ? @thumbnail.path : @path
-  end
-
-  private
-
-  def should_resize?(path)
-    Configuration.create_thumbnails
   end
 end
 
