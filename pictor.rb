@@ -6,6 +6,7 @@ require 'ostruct'
 require 'openssl'
 require 'base64'
 require 'shellwords'
+require 'json'
 
 # TEMPLATES
 PAGE_TEMPLATE = <<-ERB
@@ -15,6 +16,21 @@ PAGE_TEMPLATE = <<-ERB
   <head>
     <title>Pictor</title>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+    <script type="text/javascript>
+      var files = JSON.parse(<%= images %>);
+
+      function load = function(path) {
+        var div = document.getElementById('pictures');
+        div.innerHTML = '';
+
+        while (images.length > 0) {
+          var img = document.createElement('img');
+          img.src = images.pop();
+          div.appendChild(img);
+        };
+      }
+    </script>
+
     <style type="text/css">
       #pictures div {
         width: 400px;
@@ -44,31 +60,17 @@ PAGE_TEMPLATE = <<-ERB
   </head>
 
   <body>
-    <div id="explorer">
-      <%= explorer %>
+    <script type="text/javascript">
+      load('/');
+    </script>
+
+    <div id="gallery">
     </div>
 
-    <div id="pictures">
-      <%= content %>
+    <div id="explorer">
     </div>
   </body>
 </html>
-ERB
-
-EXPLORER_TEMPLATE = <<-ERB
-<% directories.each do |dir| %>
-  <a href="<%= url_base + dir.encoded_path %>">&gt; <%= dir.name %></a>
-<% end %>
-ERB
-
-IMAGES_TEMPLATE = <<-ERB
-<% images.each do |image| %>
-  <div class="img-frame">
-    <a href="<%= image.path %>" target="_blank">
-      <img src="<%= image.optimal_path %>" alt="<%= image.optimal_path %>" />
-    </a>
-  </div>
-<% end %>
 ERB
 
 # Lib
@@ -78,41 +80,9 @@ class Context
   end
 end
 
-class Cipher
-  def self.encrypt(data)
-    cipher = OpenSSL::Cipher::AES256.new(:CBC)
-    cipher.encrypt
-    iv = cipher.random_iv
-    cipher.key = Configuration.encryption_token
-    encoded = cipher.update(data) + cipher.final
-    [encoded, iv]
-  end
-
-  def self.decrypt(data, iv)
-    cipher = OpenSSL::Cipher::AES256.new(:CBC)
-    cipher.decrypt
-    cipher.iv = iv
-    cipher.key = Configuration.encryption_token
-    cipher.update(data) + cipher.final
-  end
-end
-
-class Directory
-  attr_reader :name
-
-  def initialize(name)
-    @name = name
-  end
-
-  def encoded_path
-    encoded, iv = Cipher.encrypt(@name)
-    [encoded, iv].map { |param| Base64::strict_encode64(param) }.map { |param| CGI::escape(param) }.join(',')
-  end
-
-  def self.decode_path(raw)
-    data, iv = raw.split(',').map { |param| Base64::decode64(param) }
-    name = Cipher.decrypt(data, iv)
-    new(name)
+class Renderer
+  def self.render(template, locals = {})
+    ERB.new(template).result(Context.create(locals))
   end
 end
 
@@ -195,36 +165,40 @@ class Thumbnail
   end
 end
 
+class ImageLister
+  def images(path)
+    {'/' => list(path)}
+  end
+
+  private
+
+  def list(path)
+    (Dir.entries(path) - %w(. ..)).map do |file|
+      if File.directory?(file)
+        {file => list(file)}
+      else
+        next unless file =~ Configuration.picture_extensions
+        file
+      end
+    end.compact
+  end
+end
+
+
 # CONFIG
 Configuration = OpenStruct.new(
   picture_extensions: /\.(png|gif|jpg)$/,
-  encryption_token: "super secret token" # at least 256 bits
-  create_thumbnails: true,
+  create_thumbnails: true
 )
 
 # MAIN
+#
+
+
+#images = ImageLister.new.images('/Users/bencemonus').to_json.inspect
+images = ImageLister.new.images('.').to_json.inspect
 cgi = CGI.new
-param = cgi.params['path'].first
-path = param ? Directory.decode_path(param).name : '.'
 
-file_entries = Dir.glob("#{path}/*")
-
-# build explorer
-directories = file_entries.select { |entry| File.directory? entry }.map { |dir| dir.split('/').last }.map { |dir| Directory.new(dir) }
-
-script_name = $0.split('/').last
-url_base = "#{script_name}?path="
-context = Context.create(directories: directories, url_base: url_base)
-explorer_source = ERB.new(EXPLORER_TEMPLATE).result(context)
-
-
-#build picture list
-images = file_entries.select { |entry| entry =~ Configuration.picture_extensions }.map { |file| Image.new(file) }
-
-context = Context.create(images: images)
-images_source = ERB.new(IMAGES_TEMPLATE).result(context)
-
-context = Context.create(explorer: explorer_source, content: images_source)
-output = ERB.new(PAGE_TEMPLATE).result(context)
+output = Renderer.render(PAGE_TEMPLATE, images: images)
 
 cgi.out { output }
