@@ -3,31 +3,77 @@
 require 'erb'
 require 'cgi'
 require 'ostruct'
-require 'openssl'
-require 'base64'
-require 'shellwords'
 require 'json'
 
 # TEMPLATES
-PAGE_TEMPLATE = <<-ERB
+PAGE_TEMPLATE = <<-HTML
 <!DOCTYPE html>
 
 <html>
   <head>
     <title>Pictor</title>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
-    <script type="text/javascript>
-      var files = JSON.parse(<%= images %>);
+    <script type="text/javascript">
+      var Gallery = function(gallery, navigator) {
+        var
+          files,
+          directory = [];
 
-      function load = function(path) {
-        var div = document.getElementById('pictures');
-        div.innerHTML = '';
+        var _update = function() {
+          // load pictures
+          gallery.innerHTML = '';
 
-        while (images.length > 0) {
-          var img = document.createElement('img');
-          img.src = images.pop();
-          div.appendChild(img);
+          var images = files.filter(function(file) {
+            //we care about pictures that have enough directory depth
+            if (file.length != directory.length + 1) { return false; }
+
+            //and they are in the current parent directory
+            return JSON.stringify(directory) == JSON.stringify(file.slice(0, -1));
+          });
+
+          images.forEach(function(file) {
+            var div = document.createElement('div');
+            div.className = 'img-frame';
+
+            var a = document.createElement('a');
+            a.href = file.join('/');
+
+            var img = document.createElement('img');
+            img.src = file;
+            a.appendChild(img)
+            div.appendChild(a);
+            gallery.appendChild(div);
+          });
         };
+
+        return {
+          load: function(data) {
+            files = data;
+            directory = [];
+            _update();
+          },
+          update: _update,
+          up: function() {
+            directory.pop();
+            _update();
+          }
+        };
+      };
+
+      window.onload = function() {
+        var container = document.getElementById('gallery');
+        var navigator = document.getElementById('navigator');
+        var gallery = Gallery(container, navigator);
+
+        var xhr = new XMLHttpRequest();
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState != 4) { return; }
+          if (xhr.status == 200) { gallery.load(JSON.parse(xhr.responseText)); }
+          else { console.log('request fail', xhr.status, xhr.responseText); }
+        };
+
+        xhr.open("GET", window.location.href + '?action=list', true);
+        xhr.send();
       }
     </script>
 
@@ -60,32 +106,16 @@ PAGE_TEMPLATE = <<-ERB
   </head>
 
   <body>
-    <script type="text/javascript">
-      load('/');
-    </script>
-
     <div id="gallery">
     </div>
 
-    <div id="explorer">
+    <div id="navigator">
     </div>
   </body>
 </html>
-ERB
+HTML
 
 # Lib
-class Context
-  def self.create(data)
-    OpenStruct.new(data).instance_eval { binding }
-  end
-end
-
-class Renderer
-  def self.render(template, locals = {})
-    ERB.new(template).result(Context.create(locals))
-  end
-end
-
 class ImageMagick
   def initialize(src, out)
     @src = src
@@ -166,39 +196,33 @@ class Thumbnail
 end
 
 class ImageLister
-  def images(path)
-    {'/' => list(path)}
+  def images
+    Dir['**/*.{jpg,gif,png}'].select { |f| File.file?(f) }.map { |f| File.split(f) - ['.'] }
+  end
+end
+
+class App
+  def initialize(cgi)
+    @cgi = cgi
   end
 
-  private
+  def index
+    @cgi.out { PAGE_TEMPLATE }
+  end
 
-  def list(path)
-    (Dir.entries(path) - %w(. ..)).map do |file|
-      if File.directory?(file)
-        {file => list(file)}
-      else
-        next unless file =~ Configuration.picture_extensions
-        file
-      end
-    end.compact
+  def list
+    list = ImageLister.new.images.to_json
+    @cgi.out('application./json') { list }
   end
 end
 
 
 # CONFIG
 Configuration = OpenStruct.new(
-  picture_extensions: /\.(png|gif|jpg)$/,
-  create_thumbnails: true
+  create_thumbnails: false
 )
 
 # MAIN
-#
-
-
-#images = ImageLister.new.images('/Users/bencemonus').to_json.inspect
-images = ImageLister.new.images('.').to_json.inspect
 cgi = CGI.new
-
-output = Renderer.render(PAGE_TEMPLATE, images: images)
-
-cgi.out { output }
+action = cgi.params['action'].first || 'index'
+App.new(cgi).send(action)
