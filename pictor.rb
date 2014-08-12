@@ -212,7 +212,7 @@ class App
 
   def list
     list = ImageLister.new.images.to_json
-    @cgi.out('application./json') { list }
+    @cgi.out('application/json') { list }
   end
 end
 
