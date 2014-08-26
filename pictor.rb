@@ -4,6 +4,7 @@ require 'erb'
 require 'cgi'
 require 'ostruct'
 require 'json'
+require 'pathname'
 
 # TEMPLATES
 PAGE_TEMPLATE = <<-HTML
@@ -14,47 +15,93 @@ PAGE_TEMPLATE = <<-HTML
     <title>Pictor</title>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
     <script type="text/javascript">
+      'use strict';
+
       var Gallery = function(gallery, navigator) {
         var
           files,
           directory = [];
 
         var _update = function() {
-          // load pictures
+          var images = [];
+          var subdirectories = [];
+
+          for (var i=0; i<files.length; i++) {
+            var file = files[i];
+
+            // file is not in the current path
+            if (file.slice(0, directory.length).join('/') != directory.join('/')) { continue; }
+
+            // file is in the current directory
+            if (file.length == directory.length + 1) { images.push(file.join('/')); }
+
+            // file is in a subdirectory
+            if (file.length == directory.length + 2) {
+             var subdirectory = file[directory.length];
+             if (subdirectories.indexOf(subdirectory) == -1) { subdirectories.push(subdirectory); }
+           }
+          }
+
+          _loadImages(images);
+          _loadNavigator(subdirectories);
+        };
+
+        var _loadImages = function(files) {
           gallery.innerHTML = '';
 
-          var images = files.filter(function(file) {
-            //we care about pictures that have enough directory depth
-            if (file.length != directory.length + 1) { return false; }
-
-            //and they are in the current parent directory
-            return JSON.stringify(directory) == JSON.stringify(file.slice(0, -1));
-          });
-
-          images.forEach(function(file) {
+          files.forEach(function(file) {
             var div = document.createElement('div');
-            div.className = 'img-frame';
 
             var a = document.createElement('a');
-            a.href = file.join('/');
+            a.href = file;
+            a.target = "_blank";
 
             var img = document.createElement('img');
             img.src = file;
+
             a.appendChild(img)
             div.appendChild(a);
             gallery.appendChild(div);
           });
         };
 
+        var _loadNavigator = function(subdirectories) {
+          navigator.innerHTML = '';
+
+          if (directory.length > 0) {
+            var span = document.createElement('span');
+            span.textContent = 'up';
+            span.onclick = function() {
+              _up();
+            };
+            navigator.appendChild(span);
+            navigator.appendChild(document.createElement('hr'));
+          }
+
+          subdirectories.forEach(function(directory) {
+            var span = document.createElement('span');
+            span.textContent = directory;
+            span.onclick = function() {
+              _enter(directory);
+            };
+            navigator.appendChild(span);
+          });
+        };
+
+        var _enter = function(subdirectory) {
+          directory.push(subdirectory)
+          _update();
+        };
+
+        var _up = function() {
+          directory.pop();
+          _update();
+        };
+
         return {
           load: function(data) {
             files = data;
             directory = [];
-            _update();
-          },
-          update: _update,
-          up: function() {
-            directory.pop();
             _update();
           }
         };
@@ -88,19 +135,22 @@ PAGE_TEMPLATE = <<-HTML
         max-width: 380px;
         border: 1px solid gray;
       }
-      #explorer {
+      #navigator {
         position: fixed;
+        top: 50px;
         left: 500px;
         border: 1px solid gray;
+        padding: 0 5px 0 5px;
       }
-      #explorer a {
+      #navigator span {
         padding: 5px;
         display: block;
         text-decoration: none;
         color: gray;
       }
-      #explorer a:hover {
+      #navigator span:hover {
         color: red;
+        cursor: pointer;
       }
     </style>
   </head>
@@ -197,7 +247,7 @@ end
 
 class ImageLister
   def images
-    Dir['**/*.{jpg,gif,png}'].select { |f| File.file?(f) }.map { |f| File.split(f) - ['.'] }
+    Dir['**/*.{jpg,gif,png}'].map { |path| Pathname(path).each_filename.to_a }
   end
 end
 
