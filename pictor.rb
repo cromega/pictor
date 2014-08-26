@@ -3,18 +3,127 @@
 require 'erb'
 require 'cgi'
 require 'ostruct'
-require 'openssl'
-require 'base64'
-require 'shellwords'
+require 'json'
+require 'pathname'
 
 # TEMPLATES
-PAGE_TEMPLATE = <<-ERB
+PAGE_TEMPLATE = <<-HTML
 <!DOCTYPE html>
 
 <html>
   <head>
     <title>Pictor</title>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+    <script type="text/javascript">
+      'use strict';
+
+      var Gallery = function(gallery, navigator) {
+        var
+          files,
+          directory = [];
+
+        var _update = function() {
+          var images = [];
+          var subdirectories = [];
+
+          for (var i=0; i<files.length; i++) {
+            var file = files[i];
+
+            // file is not in the current path
+            if (file.slice(0, directory.length).join('/') != directory.join('/')) { continue; }
+
+            // file is in the current directory
+            if (file.length == directory.length + 1) { images.push(file.join('/')); }
+
+            // file is in a subdirectory
+            if (file.length == directory.length + 2) {
+             var subdirectory = file[directory.length];
+             if (subdirectories.indexOf(subdirectory) == -1) { subdirectories.push(subdirectory); }
+           }
+          }
+
+          _loadImages(images);
+          _loadNavigator(subdirectories);
+        };
+
+        var _loadImages = function(files) {
+          gallery.innerHTML = '';
+
+          files.forEach(function(file) {
+            var div = document.createElement('div');
+
+            var a = document.createElement('a');
+            a.href = file;
+            a.target = "_blank";
+
+            var img = document.createElement('img');
+            img.src = file;
+
+            a.appendChild(img)
+            div.appendChild(a);
+            gallery.appendChild(div);
+          });
+        };
+
+        var _loadNavigator = function(subdirectories) {
+          navigator.innerHTML = '';
+
+          if (directory.length > 0) {
+            var span = document.createElement('span');
+            span.textContent = 'up';
+            span.onclick = function() {
+              _up();
+            };
+            navigator.appendChild(span);
+            navigator.appendChild(document.createElement('hr'));
+          }
+
+          subdirectories.forEach(function(directory) {
+            var span = document.createElement('span');
+            span.textContent = directory;
+            span.onclick = function() {
+              _enter(directory);
+            };
+            navigator.appendChild(span);
+          });
+        };
+
+        var _enter = function(subdirectory) {
+          directory.push(subdirectory)
+          _update();
+        };
+
+        var _up = function() {
+          directory.pop();
+          _update();
+        };
+
+        return {
+          load: function(data) {
+            files = data;
+            directory = [];
+            _update();
+          }
+        };
+      };
+
+      window.onload = function() {
+        var container = document.getElementById('gallery');
+        var navigator = document.getElementById('navigator');
+        var gallery = Gallery(container, navigator);
+
+        var xhr = new XMLHttpRequest();
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState != 4) { return; }
+          if (xhr.status == 200) { gallery.load(JSON.parse(xhr.responseText)); }
+          else { console.log('request fail', xhr.status, xhr.responseText); }
+        };
+
+        xhr.open("GET", window.location.href + '?action=list', true);
+        xhr.send();
+      }
+    </script>
+
     <style type="text/css">
       #pictures div {
         width: 400px;
@@ -26,96 +135,37 @@ PAGE_TEMPLATE = <<-ERB
         max-width: 380px;
         border: 1px solid gray;
       }
-      #explorer {
+      #navigator {
         position: fixed;
+        top: 50px;
         left: 500px;
         border: 1px solid gray;
+        padding: 0 5px 0 5px;
       }
-      #explorer a {
+      #navigator span {
         padding: 5px;
         display: block;
         text-decoration: none;
         color: gray;
       }
-      #explorer a:hover {
+      #navigator span:hover {
         color: red;
+        cursor: pointer;
       }
     </style>
   </head>
 
   <body>
-    <div id="explorer">
-      <%= explorer %>
+    <div id="gallery">
     </div>
 
-    <div id="pictures">
-      <%= content %>
+    <div id="navigator">
     </div>
   </body>
 </html>
-ERB
-
-EXPLORER_TEMPLATE = <<-ERB
-<% directories.each do |dir| %>
-  <a href="<%= url_base + dir.encoded_path %>">&gt; <%= dir.name %></a>
-<% end %>
-ERB
-
-IMAGES_TEMPLATE = <<-ERB
-<% images.each do |image| %>
-  <div class="img-frame">
-    <a href="<%= image.path %>" target="_blank">
-      <img src="<%= image.optimal_path %>" alt="<%= image.optimal_path %>" />
-    </a>
-  </div>
-<% end %>
-ERB
+HTML
 
 # Lib
-class Context
-  def self.create(data)
-    OpenStruct.new(data).instance_eval { binding }
-  end
-end
-
-class Cipher
-  def self.encrypt(data)
-    cipher = OpenSSL::Cipher::AES256.new(:CBC)
-    cipher.encrypt
-    iv = cipher.random_iv
-    cipher.key = Configuration.encryption_token
-    encoded = cipher.update(data) + cipher.final
-    [encoded, iv]
-  end
-
-  def self.decrypt(data, iv)
-    cipher = OpenSSL::Cipher::AES256.new(:CBC)
-    cipher.decrypt
-    cipher.iv = iv
-    cipher.key = Configuration.encryption_token
-    cipher.update(data) + cipher.final
-  end
-end
-
-class Directory
-  attr_reader :name
-
-  def initialize(name)
-    @name = name
-  end
-
-  def encoded_path
-    encoded, iv = Cipher.encrypt(@name)
-    [encoded, iv].map { |param| Base64::strict_encode64(param) }.map { |param| CGI::escape(param) }.join(',')
-  end
-
-  def self.decode_path(raw)
-    data, iv = raw.split(',').map { |param| Base64::decode64(param) }
-    name = Cipher.decrypt(data, iv)
-    new(name)
-  end
-end
-
 class ImageMagick
   def initialize(src, out)
     @src = src
@@ -189,36 +239,34 @@ class Thumbnail
   end
 end
 
+class ImageLister
+  def images
+    Dir['**/*.{jpg,gif,png}'].map { |path| Pathname(path).each_filename.to_a }
+  end
+end
+
+class App
+  def initialize(cgi)
+    @cgi = cgi
+  end
+
+  def index
+    @cgi.out { PAGE_TEMPLATE }
+  end
+
+  def list
+    list = ImageLister.new.images.to_json
+    @cgi.out('application./json') { list }
+  end
+end
+
+
 # CONFIG
 Configuration = OpenStruct.new(
-  picture_extensions: /\.(png|gif|jpg)$/,
-  encryption_token: "super secret token" # at least 256 bits
-  create_thumbnails: true,
+  create_thumbnails: false
 )
 
 # MAIN
 cgi = CGI.new
-param = cgi.params['path'].first
-path = param ? Directory.decode_path(param).name : '.'
-
-file_entries = Dir.glob("#{path}/*")
-
-# build explorer
-directories = file_entries.select { |entry| File.directory? entry }.map { |dir| dir.split('/').last }.map { |dir| Directory.new(dir) }
-
-script_name = $0.split('/').last
-url_base = "#{script_name}?path="
-context = Context.create(directories: directories, url_base: url_base)
-explorer_source = ERB.new(EXPLORER_TEMPLATE).result(context)
-
-
-#build picture list
-images = file_entries.select { |entry| entry =~ Configuration.picture_extensions }.map { |file| Image.new(file) }
-
-context = Context.create(images: images)
-images_source = ERB.new(IMAGES_TEMPLATE).result(context)
-
-context = Context.create(explorer: explorer_source, content: images_source)
-output = ERB.new(PAGE_TEMPLATE).result(context)
-
-cgi.out { output }
+action = cgi.params['action'].first || 'index'
+App.new(cgi).send(action)
